@@ -1,7 +1,6 @@
-/* v1.3.0 - add -x (horizontal) display option
- * Default: vertical columns
- * -l: long format
- * -x: horizontal columns (left to right)
+/* v1.4.0 - Alphabetical sort of directory entries
+ * Adds qsort() to sort filenames before displaying
+ * Works for default, -l, and -x modes
  */
 
 #define _DEFAULT_SOURCE
@@ -18,7 +17,16 @@
 #include <unistd.h>
 
 /*----------------------------------------------------------
- * print_permissions() - display rwx bits
+ * Helper: compare strings for qsort
+ *----------------------------------------------------------*/
+int compare_names(const void *a, const void *b) {
+    const char *s1 = *(const char **)a;
+    const char *s2 = *(const char **)b;
+    return strcmp(s1, s2);
+}
+
+/*----------------------------------------------------------
+ * print_permissions() - for -l flag
  *----------------------------------------------------------*/
 void print_permissions(mode_t mode) {
     putchar(S_ISDIR(mode) ? 'd' : '-');
@@ -34,7 +42,7 @@ void print_permissions(mode_t mode) {
 }
 
 /*----------------------------------------------------------
- * list_dir_long() - implement -l mode
+ * list_dir_long() - -l mode with sorted entries
  *----------------------------------------------------------*/
 void list_dir_long(const char *path) {
     DIR *d = opendir(path);
@@ -43,12 +51,24 @@ void list_dir_long(const char *path) {
         return;
     }
 
+    // Step 1: read all names
+    char **names = NULL;
+    size_t count = 0;
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         if (de->d_name[0] == '.') continue;
+        names = realloc(names, (count + 1) * sizeof(char *));
+        names[count++] = strdup(de->d_name);
+    }
+    closedir(d);
 
+    // Step 2: sort alphabetically
+    qsort(names, count, sizeof(char *), compare_names);
+
+    // Step 3: display
+    for (size_t i = 0; i < count; i++) {
         char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", path, de->d_name);
+        snprintf(full, sizeof(full), "%s/%s", path, names[i]);
 
         struct stat st;
         if (stat(full, &st) == -1) {
@@ -67,13 +87,15 @@ void list_dir_long(const char *path) {
 
         char *time_str = ctime(&st.st_mtime);
         time_str[strlen(time_str)-1] = '\0';
-        printf(" %s %s\n", time_str, de->d_name);
+        printf(" %s %s\n", time_str, names[i]);
+
+        free(names[i]);
     }
-    closedir(d);
+    free(names);
 }
 
 /*----------------------------------------------------------
- * list_dir_columns() - vertical (default) columns
+ * list_dir_columns() - vertical columns (default)
  *----------------------------------------------------------*/
 void list_dir_columns(const char *path) {
     DIR *d = opendir(path);
@@ -83,21 +105,21 @@ void list_dir_columns(const char *path) {
     }
 
     char **names = NULL;
-    size_t count = 0;
-    size_t maxlen = 0;
+    size_t count = 0, maxlen = 0;
     struct dirent *de;
-
     while ((de = readdir(d)) != NULL) {
         if (de->d_name[0] == '.') continue;
         names = realloc(names, (count + 1) * sizeof(char *));
-        names[count] = strdup(de->d_name);
+        names[count++] = strdup(de->d_name);
         size_t len = strlen(de->d_name);
         if (len > maxlen) maxlen = len;
-        count++;
     }
     closedir(d);
 
     if (count == 0) return;
+
+    // sort alphabetically
+    qsort(names, count, sizeof(char *), compare_names);
 
     struct winsize w;
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
@@ -122,7 +144,7 @@ void list_dir_columns(const char *path) {
 }
 
 /*----------------------------------------------------------
- * list_dir_horizontal() - implement -x flag
+ * list_dir_horizontal() - -x flag, sorted
  *----------------------------------------------------------*/
 void list_dir_horizontal(const char *path) {
     DIR *d = opendir(path);
@@ -132,21 +154,20 @@ void list_dir_horizontal(const char *path) {
     }
 
     char **names = NULL;
-    size_t count = 0;
-    size_t maxlen = 0;
+    size_t count = 0, maxlen = 0;
     struct dirent *de;
-
     while ((de = readdir(d)) != NULL) {
         if (de->d_name[0] == '.') continue;
         names = realloc(names, (count + 1) * sizeof(char *));
-        names[count] = strdup(de->d_name);
+        names[count++] = strdup(de->d_name);
         size_t len = strlen(de->d_name);
         if (len > maxlen) maxlen = len;
-        count++;
     }
     closedir(d);
 
     if (count == 0) return;
+
+    qsort(names, count, sizeof(char *), compare_names);
 
     struct winsize w;
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
@@ -157,10 +178,9 @@ void list_dir_horizontal(const char *path) {
     if (cols < 1) cols = 1;
 
     int rows = (count + cols - 1) / cols;
-
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
-            int idx = r * cols + c; // different indexing → left to right
+            int idx = r * cols + c;
             if (idx < (int)count)
                 printf("%-*s", col_width, names[idx]);
         }
@@ -172,7 +192,7 @@ void list_dir_horizontal(const char *path) {
 }
 
 /*----------------------------------------------------------
- * main() - parse options and call proper listing function
+ * main() - handle flags and call proper function
  *----------------------------------------------------------*/
 int main(int argc, char *argv[]) {
     int long_format = 0;
@@ -201,5 +221,3 @@ int main(int argc, char *argv[]) {
     }
     return 0;
 }
-
-
