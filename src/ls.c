@@ -1,6 +1,9 @@
-/* v1.4.0 - Alphabetical sort of directory entries
- * Adds qsort() to sort filenames before displaying
- * Works for default, -l, and -x modes
+/* v1.5.0 - Colorized Output using ANSI Escape Codes
+ * Adds color based on file type:
+ *  - Blue: Directories
+ *  - Green: Executables
+ *  - Red: Archives (.zip, .tar, .gz)
+ *  - Magenta: Symbolic Links
  */
 
 #define _DEFAULT_SOURCE
@@ -17,7 +20,32 @@
 #include <unistd.h>
 
 /*----------------------------------------------------------
- * Helper: compare strings for qsort
+ * ANSI Color Codes
+ *----------------------------------------------------------*/
+#define RESET   "\033[0m"
+#define BLUE    "\033[1;34m"
+#define GREEN   "\033[1;32m"
+#define RED     "\033[1;31m"
+#define MAGENTA "\033[1;35m"
+
+/*----------------------------------------------------------
+ * Function to choose color based on file type
+ *----------------------------------------------------------*/
+const char* get_color(const char *name, mode_t mode) {
+    if (S_ISDIR(mode)) return BLUE;
+    if (S_ISLNK(mode)) return MAGENTA;
+    if (S_ISREG(mode) && (mode & S_IXUSR)) return GREEN; // executable
+
+    // check for archive extensions
+    const char *ext = strrchr(name, '.');
+    if (ext && (!strcmp(ext, ".tar") || !strcmp(ext, ".gz") || !strcmp(ext, ".zip")))
+        return RED;
+
+    return RESET;
+}
+
+/*----------------------------------------------------------
+ * Comparator for alphabetical sorting
  *----------------------------------------------------------*/
 int compare_names(const void *a, const void *b) {
     const char *s1 = *(const char **)a;
@@ -26,7 +54,7 @@ int compare_names(const void *a, const void *b) {
 }
 
 /*----------------------------------------------------------
- * print_permissions() - for -l flag
+ * Print rwx permissions for -l
  *----------------------------------------------------------*/
 void print_permissions(mode_t mode) {
     putchar(S_ISDIR(mode) ? 'd' : '-');
@@ -42,7 +70,7 @@ void print_permissions(mode_t mode) {
 }
 
 /*----------------------------------------------------------
- * list_dir_long() - -l mode with sorted entries
+ * list_dir_long() - (-l)
  *----------------------------------------------------------*/
 void list_dir_long(const char *path) {
     DIR *d = opendir(path);
@@ -51,7 +79,6 @@ void list_dir_long(const char *path) {
         return;
     }
 
-    // Step 1: read all names
     char **names = NULL;
     size_t count = 0;
     struct dirent *de;
@@ -62,16 +89,14 @@ void list_dir_long(const char *path) {
     }
     closedir(d);
 
-    // Step 2: sort alphabetically
     qsort(names, count, sizeof(char *), compare_names);
 
-    // Step 3: display
     for (size_t i = 0; i < count; i++) {
         char full[1024];
         snprintf(full, sizeof(full), "%s/%s", path, names[i]);
 
         struct stat st;
-        if (stat(full, &st) == -1) {
+        if (lstat(full, &st) == -1) {
             perror("stat");
             continue;
         }
@@ -87,7 +112,9 @@ void list_dir_long(const char *path) {
 
         char *time_str = ctime(&st.st_mtime);
         time_str[strlen(time_str)-1] = '\0';
-        printf(" %s %s\n", time_str, names[i]);
+
+        const char *color = get_color(names[i], st.st_mode);
+        printf(" %s %s%s%s\n", time_str, color, names[i], RESET);
 
         free(names[i]);
     }
@@ -95,7 +122,7 @@ void list_dir_long(const char *path) {
 }
 
 /*----------------------------------------------------------
- * list_dir_columns() - vertical columns (default)
+ * list_dir_columns() - default (vertical)
  *----------------------------------------------------------*/
 void list_dir_columns(const char *path) {
     DIR *d = opendir(path);
@@ -116,15 +143,11 @@ void list_dir_columns(const char *path) {
     }
     closedir(d);
 
-    if (count == 0) return;
-
-    // sort alphabetically
     qsort(names, count, sizeof(char *), compare_names);
 
     struct winsize w;
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
     int term_width = w.ws_col ? w.ws_col : 80;
-
     int col_width = (int)maxlen + 2;
     int cols = term_width / col_width;
     if (cols < 1) cols = 1;
@@ -133,8 +156,14 @@ void list_dir_columns(const char *path) {
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
             int idx = c * rows + r;
-            if (idx < (int)count)
-                printf("%-*s", col_width, names[idx]);
+            if (idx < (int)count) {
+                struct stat st;
+                char full[1024];
+                snprintf(full, sizeof(full), "%s/%s", path, names[idx]);
+                if (lstat(full, &st) == -1) continue;
+                const char *color = get_color(names[idx], st.st_mode);
+                printf("%s%-*s%s", color, col_width, names[idx], RESET);
+            }
         }
         printf("\n");
     }
@@ -144,7 +173,7 @@ void list_dir_columns(const char *path) {
 }
 
 /*----------------------------------------------------------
- * list_dir_horizontal() - -x flag, sorted
+ * list_dir_horizontal() - (-x)
  *----------------------------------------------------------*/
 void list_dir_horizontal(const char *path) {
     DIR *d = opendir(path);
@@ -165,14 +194,11 @@ void list_dir_horizontal(const char *path) {
     }
     closedir(d);
 
-    if (count == 0) return;
-
     qsort(names, count, sizeof(char *), compare_names);
 
     struct winsize w;
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
     int term_width = w.ws_col ? w.ws_col : 80;
-
     int col_width = (int)maxlen + 2;
     int cols = term_width / col_width;
     if (cols < 1) cols = 1;
@@ -181,8 +207,14 @@ void list_dir_horizontal(const char *path) {
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
             int idx = r * cols + c;
-            if (idx < (int)count)
-                printf("%-*s", col_width, names[idx]);
+            if (idx < (int)count) {
+                struct stat st;
+                char full[1024];
+                snprintf(full, sizeof(full), "%s/%s", path, names[idx]);
+                if (lstat(full, &st) == -1) continue;
+                const char *color = get_color(names[idx], st.st_mode);
+                printf("%s%-*s%s", color, col_width, names[idx], RESET);
+            }
         }
         printf("\n");
     }
@@ -192,7 +224,7 @@ void list_dir_horizontal(const char *path) {
 }
 
 /*----------------------------------------------------------
- * main() - handle flags and call proper function
+ * main() - parse options and run display functions
  *----------------------------------------------------------*/
 int main(int argc, char *argv[]) {
     int long_format = 0;
